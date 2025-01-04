@@ -42,7 +42,7 @@ pal<- c("#3abdaa","#7b2458","#facd00","#41658a","#e63946","#b2a3b5","#264653")
 stream_files<-list.files("input_files/", pattern="Streaming_History_Audio")
 
 #Merge all streaming history files into a data frame
-#Read and parse playlist data from the fist JSON file
+#Read and parse playlist data from the first JSON file
 stream<-fromJSON(paste0("input_files/",stream_files[1]), flatten = TRUE)
 #loop all
 for(i in 2:length(stream_files)){
@@ -53,37 +53,38 @@ for(i in 2:length(stream_files)){
 
 ```{r}
 # Process Spotify streaming data
-stream <- stream %>% 
+stream <- stream %>%
   mutate(
     # Convert timestamp and rename metadata columns
     date = as_datetime(ts, tz = "UTC"),
     artist_name = master_metadata_album_artist_name,
     track_name = master_metadata_track_name,
     album_name = master_metadata_album_album_name,
-    
+
     # Categorize device types
     Device = case_when(
-      grepl("Android-tablet|Android OS|android|android_tv", platform) ~ "Phone",
-      grepl("public_js|web_player|WebPlayer|chrome|Windows 10|windows", platform) ~ "Computer",
+      grepl("Android-tablet|Android OS|android|iOS|ios", platform) ~ "Phone",
+      grepl("public_js|web_player|WebPlayer|chrome|Windows|windows|Linux|linux", platform) ~ "Computer",
+      grepl("cast|tv", platform) ~ "TV",
     ),
-    
+
     # Categorize track end reasons
     End = case_when(
       reason_end %in% c("trackdone", "endplay") ~ "Track finished",
       reason_end == "logout" ~ "Spotify closed",
-      reason_end == "playbtn" ~ "Play button", 
+      reason_end == "playbtn" ~ "Play button",
       reason_end == "fwdbtn" ~ "Forward button",
       reason_end == "backbtn" ~ "Backward button",
       .default = "Other"
     ),
-    
+
     # Categorize track start reasons
     Start = case_when(
       reason_start %in% c("clickrow", "click-row") ~ "Selected",
       reason_start == "trackdone" ~ "Track finished",
       reason_start == "persisted" ~ "Persisted",
       reason_start == "playbtn" ~ "Play button",
-      reason_start == "fwdbtn" ~ "Forward button", 
+      reason_start == "fwdbtn" ~ "Forward button",
       reason_start == "backbtn" ~ "Backward button",
       .default = "Other"
     )
@@ -100,11 +101,12 @@ if(save_csv) write.csv(stream, "output_files/stream.csv")
 ```{r}
 # Calculate total listening hours by year
 by_year <- stream %>%
+  filter(year(date)>=threshold_year) %>% # Filter data from threshold year onwards
   group_by(year = as.factor(year(date))) %>%
   summarise(h_played = sum(ms_played)/1000/60/60,
             n_tracks=n(),
-            n_songs=n_distinct(n_tracks),
-            n_artists=n_distinct(artist_name)) 
+            n_songs=n_distinct(track_name),
+            n_artists=n_distinct(artist_name))
 
 # Display table
 by_year%>%
@@ -124,8 +126,9 @@ kable(caption="Spotify listened by year")
 ```{r}
 # Calculate total listening hours by year and device
 by_device <- stream %>%
+  filter(year(date)>=threshold_year) %>% # Filter data from threshold year onwards
   group_by(Device, year = as.factor(year(date))) %>%
-  summarise(h_played = sum(ms_played)/1000/60/60) 
+  summarise(h_played = sum(ms_played)/1000/60/60)
 
 # Create stacked bar chart of listening hours by device and year
 plot_device<-by_device%>%
@@ -160,7 +163,7 @@ plot_shuffle<-by_shuffle%>%
   geom_col() +
   scale_fill_manual(values = pal, na.value = "grey80") +
   theme_minimal() +
-  
+
   scale_y_continuous(labels = function(x) paste0(x*100, "%")) + # Convert y-axis to percentages
   ggtitle("Proportion of tracks listened in shuffle mode") +
   ylab("")
@@ -208,14 +211,14 @@ by_reason_start_shuffle <- stream %>%
 
 plot_reason_start_shuffle<-by_reason_start_shuffle%>%
   ggplot(aes(x = year, y = n, fill=`Start`)) +
-  geom_col(position="fill") +                          
+  geom_col(position="fill") +
   facet_grid(cols=vars(Shuffle)) +  # Split by shuffle mode
-  scale_fill_manual(values = pal_start) + 
+  scale_fill_manual(values = pal_start) +
   theme_minimal() +
-  scale_y_continuous(labels = function(x) paste0(x*100, "%")) + 
+  scale_y_continuous(labels = function(x) paste0(x*100, "%")) +
   ggtitle("How tracks started") +
   ylab("Proportion of tracks") +
-  theme(legend.title=element_blank()) 
+  theme(legend.title=element_blank())
 
 # Display plot
 plot_reason_start_shuffle
@@ -233,19 +236,19 @@ by_reason_end_shuffle <- stream %>%
   group_by(year = as.factor(year(date)),`End`, Shuffle) %>%
   summarise(n = n()) %>%
   ungroup() %>%
-  arrange(desc(n)) 
+  arrange(desc(n))
 
 # Create a stacked bar chart showing how tracks ended (shuffled vs non-shuffled)
 plot_reason_end_shuffle<-by_reason_end_shuffle%>%
   ggplot(aes(x = year, y = n, fill=`End`)) +
-  geom_col(position="fill") +                          
+  geom_col(position="fill") +
   facet_grid(cols=vars(Shuffle)) +  # Split by shuffle mode
-  scale_fill_manual(values = pal_end) + 
+  scale_fill_manual(values = pal_end) +
   theme_minimal() +
-  scale_y_continuous(labels = function(x) paste0(x*100, "%")) + 
+  scale_y_continuous(labels = function(x) paste0(x*100, "%")) +
   ggtitle("How tracks ended") +
   ylab("Proportion of tracks") +
-  theme(legend.title=element_blank()) 
+  theme(legend.title=element_blank())
 
 # Display plot
 plot_reason_end_shuffle
@@ -261,9 +264,12 @@ if(save_svg) ggsave(paste0("plot_reason_end_shuffle",".svg"), path = "output_fil
 ```{r}
 #| fig.height: 7.6
 # Create a dataframe with all days in the date range
+date_range <- stream %>%
+  filter(year(date)>=threshold_year) # Filter data from threshold year onwards
+
 all_days <- data.frame(
-  day_date = seq(as.Date(floor_date(min(stream$date), unit="year")),
-                as.Date(ceiling_date(max(stream$date), unit="year")-1), 
+  day_date = seq(as.Date(floor_date(min(date_range$date), unit="year")),
+                as.Date(ceiling_date(max(date_range$date), unit="year")-1),
                 by="days")) %>%
   mutate(day_n = row_number())
 
@@ -277,8 +283,8 @@ first_week_day <- all_days %>%
             days_year = n())
 
 # Process streaming data by day
-by_day_year <- stream %>%
-  mutate(day_date = date(stream$date)) %>%
+by_day_year <- date_range %>%
+  mutate(day_date = date(date_range$date)) %>%
   right_join(all_days) %>%
   group_by(day_date, day_n) %>%
   # Calculate daily metrics
@@ -383,8 +389,8 @@ by_top_track_day <- stream %>%
 
 
 # Get top 10 days by hours played
-by_top_day <- stream %>%
-  mutate(day_date = date(stream$date)) %>%
+by_top_day <- date_range %>%
+  mutate(day_date = date(date_range$date)) %>%
   group_by(day_date) %>%
   summarise(
     n_tracks_all = n(),
@@ -395,7 +401,7 @@ by_top_day <- stream %>%
   ungroup() %>%
   arrange(desc(h_played)) %>%
   slice_max(h_played, n = 10)
-  
+
 # Join the data and calculate final metrics
 by_top_day <-by_top_day %>%
   left_join(by_top_track_day) %>%
@@ -425,16 +431,16 @@ all_hours <- all_days %>% expand(day_date, hour=1:24)
 
 
 # Calculate average listening time by hour and year
-by_hour_year <- stream %>%
-  mutate(day_date = date(stream$date),
+by_hour_year <- date_range %>%
+  mutate(day_date = date(date_range$date),
          hour = hour(date)) %>%
-  right_join(all_hours) %>% 
+  right_join(all_hours) %>%
   group_by(day_date, hour) %>%
   mutate(ms_played = ifelse(is.na(ms_played), 0, ms_played)) %>%
   summarise(min_played = sum(ms_played/1000/60)) %>%
   group_by(year = year(day_date), hour) %>%
-  summarise(min_played = mean(min_played)) 
-  
+  summarise(min_played = mean(min_played))
+
 
 # Create visualization of average listening time by hour and year
 plot_hour_year <- by_hour_year %>%
@@ -445,7 +451,7 @@ plot_hour_year <- by_hour_year %>%
   scale_fill_gradientn(colors = c("grey95", pal[c(1,3,2)])) +
   ggtitle("Minutes listened per hour of the day (on average)") +
   theme(legend.title = element_blank(),
-        axis.text.x = element_blank(), 
+        axis.text.x = element_blank(),
         axis.ticks.x = element_blank())
 
 # Display plot
@@ -462,6 +468,7 @@ if(save_svg) ggsave(paste0("plot_hour_year",".svg"), width = 7, height = 5, path
 ```{r}
 # Calculate statistics by year
 by_year <- stream %>%
+  filter(year(date)>=threshold_year) %>% # Filter data from threshold year onwards
   group_by(year = year(date)) %>%
   summarise(
     min_played_year = sum(ms_played)/1000/60,
@@ -471,6 +478,7 @@ by_year <- stream %>%
 
 # Calculate statistics by artist and year
 by_artist_year <- stream %>%
+  filter(year(date)>=threshold_year) %>% # Filter data from threshold year onwards
   group_by(artist_name, year = year(date)) %>%
   summarise(
     min_played = sum(ms_played/1000/60),
@@ -480,7 +488,7 @@ by_artist_year <- stream %>%
   ) %>%
   # Split multiple artists into separate rows
   separate_wider_delim(
-    artist_name, 
+    artist_name,
     ", ",
     names = paste0("artist_name", 1:5),
     too_few = "align_start",
@@ -532,9 +540,10 @@ top_artist_year <- by_artist_year %>%
 
 # Calculate statistics by artist
 by_artist_all <- stream %>%
+  filter(year(date)>=threshold_year) %>% # Filter data from threshold year onwards
   # Split multiple artists into separate rows
   separate_wider_delim(
-    artist_name, 
+    artist_name,
     ", ",
     names = paste0("artist_name", 1:5),
     too_few = "align_start",
@@ -578,7 +587,7 @@ top_artist_global<-unique(c(top_artist_year$artist_name, top_artist_all$artist_n
 by_top_artist <- by_artist_year %>%
   filter(artist_name%in%top_artist_global) %>%
   left_join(by_artist_all) %>%
-  arrange(desc(n_tracks)) 
+  arrange(desc(n_tracks))
 ```
 
 #### Global - excluding 1 artist
@@ -592,15 +601,15 @@ plot_top_artist_year_filter<-by_top_artist%>%
   geom_tile() +
   theme_void() +
   facet_grid(
-    cols = vars(year), 
-    rows = vars(reorder(artist_name, -n_tracks_all)), 
+    cols = vars(year),
+    rows = vars(reorder(artist_name, -n_tracks_all)),
     scales = "free"
   ) +
   scale_fill_gradientn(colors = c("grey95", pal[c(1,3,2)])) +
   ggtitle(paste0("Times listened to most played artists (excluding ", top_artist,")")) +
   theme(
     legend.title = element_blank(),
-    axis.text.x = element_blank(), 
+    axis.text.x = element_blank(),
     axis.ticks.x = element_blank()
   )
 
@@ -617,18 +626,18 @@ if(save_svg) ggsave(paste0("plot_top_artist_year_filter",".svg"), width = 7, hei
 #| fig.height: 9
 # Create a heatmap (not filtering top_artist)
 plot_top_artist_year<-by_top_artist%>%
-  ggplot(aes(x = year, 
-             y = reorder(artist_name, -n_tracks_all), 
+  ggplot(aes(x = year,
+             y = reorder(artist_name, -n_tracks_all),
              fill = n_tracks)) +
   geom_tile() +
   theme_void() +
-    facet_grid(cols = vars(year), 
-             rows = vars(reorder(artist_name, -n_tracks_all)), 
+    facet_grid(cols = vars(year),
+             rows = vars(reorder(artist_name, -n_tracks_all)),
              scales = "free") +
   scale_fill_gradientn(colors = c("grey95", pal[c(1,3,2)])) +
   ggtitle("Times listened to most played artists") +
   theme(legend.title = element_blank(),
-        axis.text.x = element_blank(), 
+        axis.text.x = element_blank(),
         axis.ticks.x = element_blank())
 
 # Display plot
@@ -671,7 +680,7 @@ by_top_artist_matrix <- by_artist_year %>%
   select(artist_name, year, p_tracks) %>%
   arrange(year, desc(p_tracks))
 
-# Create wide format matrix 
+# Create wide format matrix
 # (this is redundant, but I was stuck geting the artist order right)
 matrix <- tidyr::pivot_wider(
   data = by_top_artist_matrix,
@@ -696,8 +705,8 @@ plot_top_artist_matrix <- by_top_artist_matrix %>%
   geom_tile(position = "identity") +
   theme_void() +
   facet_grid(
-    cols = vars(year), 
-    rows = vars(artist_name), 
+    cols = vars(year),
+    rows = vars(artist_name),
     scales = "free"
   ) +
   scale_fill_gradientn(colors = c("grey95", pal[c(1,3,2)])) +
@@ -722,6 +731,7 @@ if(save_svg) ggsave(paste0("plot_top_artist_matrix", ".svg"), width = 8, height 
 ```{r}
 # Calculate total play time and count for each track
 top_track <- stream %>%
+  filter(year(date)>=threshold_year) %>% # Filter data from threshold year onwards
   group_by(track_name, artist_name) %>%
   summarise(
     min_played = sum(ms_played/1000/60),  # Convert ms to minutes
@@ -745,6 +755,7 @@ top_track[1:10,]%>%
 #| fig.height: 10
 # Calculate statistics by track and year
 by_track_year <- stream %>%
+  filter(year(date)>=threshold_year) %>% # Filter data from threshold year onwards
   group_by(track_name, year = year(date)) %>%
   summarise(
     min_played = sum(ms_played/1000/60),
@@ -784,15 +795,15 @@ plot_track_year<-by_track_year %>%
   geom_tile() +
   theme_void() +
   facet_grid(
-    cols = vars(year), 
-    rows = vars(reorder(track_name, -n_tracks_all)), 
+    cols = vars(year),
+    rows = vars(reorder(track_name, -n_tracks_all)),
     scales = "free"
   ) +
   scale_fill_gradientn(colors = c("grey95", pal[c(1,3,2)])) +
   ggtitle("Times listened to most played tracks") +
   theme(
     legend.title = element_blank(),
-    axis.text.x = element_blank(), 
+    axis.text.x = element_blank(),
     axis.ticks.x = element_blank()
   )
 
@@ -809,6 +820,7 @@ if(save_svg) ggsave(paste0("plot_track_year",".svg"), width = 7, height = 9, pat
 ```{r}
 # Filter and summarize selected tracks
 by_track_select <- stream %>%
+  filter(year(date)>=threshold_year) %>% # Filter data from threshold year onwards
   # Get only selected tracks that have a name
   filter(Start=="Selected", !is.na(track_name)) %>%
   group_by(track_name, artist_name) %>%
@@ -933,8 +945,12 @@ by_incognito_track %>%
 ### Set up
 
 ```{r}
-# Read and parse playlist data from JSON file
-playlist <- fromJSON("input_files/Playlist1.json", flatten = TRUE)[[1]]
+# Find json streaming history files
+playlist_files<-list.files("input_files/", pattern="Playlist")
+
+#Merge all playlist files into a data frame
+#Read and parse playlist data from the first JSON file
+playlist<-fromJSON(paste0("input_files/",playlist_files[1]), flatten=TRUE)[[1]]
 
 playlist_tracks <- data.frame()
 
@@ -946,9 +962,16 @@ for(i in 1:nrow(playlist)){
 }
 
 # Read library data from JSON file
-library <- fromJSON("input_files/YourLibrary.json", flatten = TRUE)[[1]]
+library <- fromJSON("input_files/YourLibrary.json", flatten = TRUE)
+library_tracks <- library$tracks%>%
+  mutate(artist_name = artist,
+         track_name = track,
+         album_name = album)
+library_albums <- library$album%>%
+  mutate(artist_name = artist,
+         album_name = album)
+library <- merge(library$tracks, library$album, all = TRUE)
 ```
-
 ### User playlists
 
 ```{r}
@@ -1003,37 +1026,51 @@ playlist_top_artist[1:10,]%>%
 
 ```{r}
 # Get most common artists in library (saved songs)
-library_tracks<-library%>%
-  mutate(artist_name = artist,
-         track_name = track,
-         album_name = album)
 
-library_top_artist<-library_tracks%>%
+library_tracks_top_artist<-library_tracks%>%
   group_by(artist_name)%>%
   summarise(n_songs=n_distinct(track_name))%>%
   arrange(desc(n_songs))%>%
   ungroup()
 
 # Display table
-library_top_artist[1:10,]%>%
+library_tracks_top_artist[1:10,]%>%
   transmute(
     `Artist` = artist_name,
     `N songs` = n_songs,
   )%>%
   kable(caption="Artists with more songs in library")
+
+# Get most common artists in library (saved albums)
+
+library_albums_top_artist<-library_albums%>%
+  group_by(artist_name)%>%
+  summarise(n_albums=n_distinct(album_name))%>%
+  arrange(desc(n_albums))%>%
+  ungroup()
+
+# Display table
+library_albums_top_artist[1:10,]%>%
+  transmute(
+    `Artist` = artist_name,
+    `N albums` = n_albums,
+  )%>%
+  kable(caption="Artists with more albums in library")
 ```
 
 ### Saved in playlist or library
 
 ```{r}
-# Combine tracks from playlists and library 
+# Combine tracks from playlists and library
 saved_tracks <- unique(c(playlist_top_tracks$track_name, library_tracks$track_name))
 
 # Combine artists from playlists and library
-saved_artist <- unique(c(playlist_top_artist$artist_name, library_top_artist$artist_name))
+saved_artist <- unique(c(playlist_top_artist$artist_name,
+  library_tracks_top_artist$artist_name, library_albums_top_artist$artist_name))
 
 # Plot proportion of tracks in playlists by year
 plot_saved_track <- stream %>%
+  filter(year(date)>=threshold_year) %>% # Filter data from threshold year onwards
   mutate(`In my playlists` = ifelse(track_name %in% saved_tracks, "Yes", "No")) %>%
   group_by(`In my playlists`, year = as.factor(year(date))) %>%
   summarise(n = n()) %>%
@@ -1055,6 +1092,7 @@ if(save_svg) ggsave(paste0("plot_saved_track",".svg"), path = "output_files/")
 ```{r}
 # Plot proportion of artists in playlists by year
 plot_saved_artist <- stream %>%
+  filter(year(date)>=threshold_year) %>% # Filter data from threshold year onwards
   mutate(`In my playlists`=ifelse(artist_name%in%saved_artist,"Yes","No"))%>%
   group_by(`In my playlists`, year = as.factor(year(date))) %>%
   summarise(n = n()) %>%
