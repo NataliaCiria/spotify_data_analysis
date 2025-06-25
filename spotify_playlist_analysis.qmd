@@ -1,0 +1,246 @@
+---
+title: "Spotify Stream History Analyis"
+author: "Natalia Ciria"
+date: last-modified
+format:
+  html:
+    embed-resources: true
+    code-tools: true
+    code-fold: true
+    code-block-border-left: true
+execute:
+  warning: false
+  message: false
+---
+
+
+```{r}
+# Set-up parameters
+save_csv <- TRUE # Export stream data frame as csv
+save_svg <- TRUE # Export ggplots as svg files
+
+# Required libraries
+library(jsonlite) # Working with JSON data
+library(dplyr) # Data transformation
+library(tidyr) # Data cleaning
+library(lubridate) # Handling dates and times
+library(ggplot2) # Plot graphs
+library(knitr) # Report formatting
+library(spotifyr) # Connect to spotify API
+if(save_svg) library(svglite) # Create SVG files
+
+# Colour palette
+pal<- c("#3abdaa","#7b2458","#facd00","#41658a","#e63946","#b2a3b5","#264653")
+```
+
+
+```{r}
+# Connect to Spotify API
+secret_keys<-readLines("input_files/secret_keys.txt")
+Sys.setenv(SPOTIFY_CLIENT_ID = secret_keys[1])
+Sys.setenv(SPOTIFY_CLIENT_SECRET = secret_keys[2])
+access_token <- get_spotify_access_token()
+```
+
+```{r}
+# Get playlist tracks
+playlist<-data.frame()
+for(i in seq(1,1000,100)){
+  playlist_i <-get_playlist_tracks("6Idy8v4eBInpARCwHJWo0Y", offset = i)
+  playlist<-rbind(playlist,playlist_i)
+  if(is.null(playlist_i)) break
+}
+```
+
+```{r}
+# Add user alias
+users<-read.delim("input_files/users.txt", sep=",")
+playlist<-left_join(playlist,users, by=c(added_by.id="user_id"))
+```
+
+```{r}
+# Clean data
+playlist<-playlist%>%
+  mutate(track_year = substr(track.album.release_date,1,4))
+```
+
+
+
+```{r}
+tracks_by_user<-playlist %>% 
+  group_by(user_alias)%>%
+  summarise(n_tracks=n())
+
+# Create horizontal bar chart of tracks added by user
+plot_tracks_by_user<-ggplot(tracks_by_user,aes(x = reorder(user_alias, n_tracks), y = n_tracks, fill = user_alias)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = n_tracks), hjust = -0.3, size = 3.5) +
+  coord_flip() +
+  scale_fill_manual(values = pal) +
+  labs(title = "Number of Tracks Added by User",
+       x = "User",
+       y = "Number of Tracks") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  # Expand the plot area to accommodate the labels
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2)))
+
+plot_tracks_by_user
+
+# Save the plot if save_svg is TRUE
+if(save_svg) {
+  ggsave("output_files/plot_tracks_by_user.svg", width = 8, height = 6)
+}
+```
+```{r}
+# Count tracks by year
+tracks_by_year <- playlist %>%
+  filter(!is.na(track_year)) %>%
+  group_by(track_year) %>%
+  summarise(count = n()) %>%
+  arrange(track_year)
+
+# Create column plot by track year
+plot_track_years <- ggplot(tracks_by_year, aes(x = track_year, y = count)) +
+  geom_col(fill = pal[1]) +
+  theme_minimal() +
+  labs(title = "Tracks by Release Year",
+       x = "Year",
+       y = "Number of Tracks") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Display plot
+plot_track_years
+
+# Save plot if needed
+if(save_svg) ggsave(paste0("plot_track_years",".svg"), path = "output_files/")
+```
+```{r}
+# Count tracks by year and user
+tracks_by_user_year <- playlist %>%
+  filter(!is.na(track.album.release_date) & !is.na(user_alias)) %>%
+  mutate(track_year = substr(track.album.release_date,1,4)) %>%
+  group_by(user_alias, track_year) %>%
+  summarise(count = n()) %>%
+  arrange(track_year)
+
+# Create column plot by track year colored by user
+plot_track_years_by_user <- ggplot(tracks_by_user_year, aes(x = track_year, y = count, fill = user_alias)) +
+  geom_col() +
+  scale_fill_manual(values = pal) +
+  theme_minimal() +
+  labs(title = "Tracks by Release Year and User",
+       x = "Year",
+       y = "Number of Tracks",
+       fill = "User") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Display plot
+plot_track_years_by_user
+
+# Save plot if needed
+if(save_svg) ggsave(paste0("plot_track_years_by_user",".svg"), path = "output_files/")
+```
+
+```{r}
+# Most added artists analysis
+# Count tracks by year and user alias
+artists <- playlist %>%
+  unnest(track.album.artists)%>%
+  mutate(artist_name=name)%>%
+  group_by(artist_name, user_alias) %>%
+  summarise(
+    count = n()
+  ) %>%
+  arrange(desc(count)) %>%
+  head(15)  # Top 15 artists
+
+# Create column plot with colors by user_alias
+plot_artists_user <- ggplot(artists, aes(x = reorder(artist_name, -count), y = count, fill = user_alias)) +
+  geom_col() +
+  scale_fill_manual(values = pal) +
+  theme_minimal() +
+  labs(title = "Top 15 Artists by User",
+       x = "Artist",
+       y = "Number of Tracks") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Display plot
+plot_artists_user
+
+# Save plot if needed
+if(save_svg) ggsave(paste0("plot_artists_user",".svg"), path = "output_files/")
+```
+
+## Compare to streaming history
+
+```{r}
+stream<-read.csv("output_files/stream.csv")
+
+stream_tracks<-unique(stream$track_name)
+```
+
+```{r}
+playlist<-playlist%>%
+  mutate(
+    in_stream=track.name%in%stream_tracks
+  )
+
+# Create a dataset for the donut plot
+by_in_stream <- playlist %>%
+  group_by(in_stream) %>%
+  summarise(count = n()) %>%
+  mutate(
+    in_stream_label = ifelse(in_stream, "In Stream History", "Not in Stream History"),
+    percentage = count / sum(count) * 100
+  )
+
+# Create a donut plot
+plot_by_in_stream <- ggplot(by_in_stream, aes(x = 2, y = count, fill = in_stream_label)) +
+  geom_col() +
+  coord_polar(theta = "y") +
+  xlim(0.5, 2.5) +  # Create the hole in the middle
+  scale_fill_manual(values = c(pal[1], pal[2])) +
+  theme_void() +
+  labs(
+    title = "Playlist Tracks in Stream History",
+    fill = "Status"
+  ) +
+  geom_text(aes(label = paste0(round(percentage), "%")), 
+            position = position_stack(vjust = 0.5)) +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14),
+    legend.position = "bottom"
+  )
+
+# Display plot
+plot_by_in_stream
+
+# Save plot if needed
+if(save_svg) ggsave(paste0("plot_by_in_stream",".svg"), path = "output_files/")
+```
+
+```{r}
+playlist_tracks_in_stream<-unique(playlist$track.name[playlist$in_stream])
+
+top_track<-stream%>%
+  filter(track_name%in%playlist_tracks_in_stream)%>%
+  group_by(track_name, artist_name) %>%
+  summarise(
+    min_played = sum(ms_played/1000/60),  # Convert ms to minutes
+    n_tracks = n()
+  ) %>%
+  arrange(desc(n_tracks))%>%
+  ungroup()
+
+# Display table
+top_track[1:10,]%>%
+  transmute(
+    `Track` = track_name,
+    `Artist` = artist_name,
+    `Minutes played` = round(min_played,2),
+    `N tracks` = `n_tracks`
+  )%>%
+  kable(caption="Top 10 tracks")
+```
+
